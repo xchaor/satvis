@@ -5,7 +5,15 @@ const API_BASE = "/api/gp/";
 const STATIC_BASE = "data/gp/";
 const PROBE_URL = "/api/groups.json";
 const STATIC_INDEX_URL = "data/gp/index.json";
-const PROBE_TIMEOUT_MS = 3000;
+/**
+ * The worker answers in milliseconds on its own domain. A dev server proxying it through
+ * a slow residential link measured 4 s for the first, TLS-heavy request, which the old
+ * 3 s missed: the probe then fell back to a missing static snapshot and registered no
+ * groups, leaving the globe without satellites or models.
+ */
+const PROBE_TIMEOUT_MS = 10000;
+/** A dev proxy in front of the worker resets the odd connection; a second one often lands. */
+const PROBE_ATTEMPTS = 2;
 
 /** `/api/groups.json` and `data/gp/index.json` share this shape. */
 export interface GpIndexEntry {
@@ -125,22 +133,31 @@ async function fetchStaticIndex(): Promise<GpIndex> {
   }
 }
 
-async function probeGpSource(): Promise<GpSourceInfo> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(PROBE_URL, { signal: controller.signal });
-    if (!response.ok) {
-      return { base: STATIC_BASE, index: await fetchStaticIndex() };
+/** The worker's index, or undefined after every attempt failed. */
+async function probeApi(): Promise<GpIndex | undefined> {
+  for (let attempt = 0; attempt < PROBE_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(PROBE_URL, { signal: controller.signal });
+      if (!response.ok) {
+        continue;
+      }
+      // A worker-less deployment answers with index.html and a 200, so require a JSON body.
+      const payload = (await response.json()) as unknown;
+      return parseIndex(payload);
+    } catch {
+      // Retried while attempts remain.
+    } finally {
+      clearTimeout(timer);
     }
-    // A worker-less deployment answers with index.html and a 200, so require a JSON body.
-    const payload = (await response.json()) as unknown;
-    return { base: API_BASE, index: parseIndex(payload) };
-  } catch {
-    return { base: STATIC_BASE, index: await fetchStaticIndex() };
-  } finally {
-    clearTimeout(timer);
   }
+  return undefined;
+}
+
+async function probeGpSource(): Promise<GpSourceInfo> {
+  const index = await probeApi();
+  return index === undefined ? { base: STATIC_BASE, index: await fetchStaticIndex() } : { base: API_BASE, index };
 }
 
 function resolveGpSource(): Promise<GpSourceInfo> {
