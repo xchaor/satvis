@@ -11,6 +11,8 @@ import { resolvePreset, updateMetadata } from "@/config/presets";
 import { CesiumController } from "@/modules/CesiumController";
 import { createViewer } from "@/modules/createViewer";
 import { startSceneSync } from "@/modules/sceneSync";
+import { startTtcHost } from "@/modules/ttc/TtcHostBridge";
+import { startTtc } from "@/modules/ttc/TtcManager";
 import piniaUrlSync from "@/modules/util/urlSync";
 
 import App from "./App.vue";
@@ -52,6 +54,8 @@ app.use(pinia);
 
 // Not a component: it must outlive every panel and not depend on mount order.
 startSceneSync(cc);
+startTtc(cc);
+startTtcHost(cc);
 
 app.use(router);
 

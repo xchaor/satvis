@@ -11,6 +11,8 @@ import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
+import { ttcHttpApi } from "./vite-plugins/ttcHttp.ts";
+
 const cesiumEngineSource = "node_modules/@cesium/engine";
 const cesiumWidgetsSource = "node_modules/@cesium/widgets";
 const cesiumBaseUrl = "cesium";
@@ -61,6 +63,7 @@ export default defineConfig({
         index: fileURLToPath(new URL("index.html", import.meta.url)),
         about: fileURLToPath(new URL("about.html", import.meta.url)),
         embedded: fileURLToPath(new URL("embedded.html", import.meta.url)),
+        ttc: fileURLToPath(new URL("ttc.html", import.meta.url)),
       },
       output: {
         codeSplitting: {
@@ -84,6 +87,7 @@ export default defineConfig({
   },
   plugins: [
     vue(),
+    ttcHttpApi(),
     ui({
       ui: { colors: { neutral: "neutral" } },
       // Composables are imported. The declarations auto-import writes exist only where Vite

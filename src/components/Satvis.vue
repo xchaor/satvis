@@ -270,6 +270,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 
 import CatalogSheet from "@/components/catalog/CatalogSheet.vue";
 import { useShare } from "@/composables/useBookmarks";
+import { useToastProxy } from "@/composables/useToastProxy";
 import { useController } from "@/composables/useController";
 import { useGeolocation } from "@/composables/useGeolocation";
 import { useSelectedEntity } from "@/composables/useSelectedEntity";
@@ -301,7 +302,7 @@ import SegmentedControl from "./SegmentedControl.vue";
 import SkyHud from "./SkyHud.vue";
 import ToolbarPanel from "./ToolbarPanel.vue";
 
-type MenuKey = "bookmarks" | "cat" | "sat" | "gs" | "map" | "globe" | "sky" | "render";
+type MenuKey = "bookmarks" | "cat" | "sat" | "gs" | "ttc" | "map" | "globe" | "sky" | "render";
 
 /** Async, so the benchmark and the performance panel stay out of the main bundle. */
 const BenchmarkPanel = defineAsyncComponent(() => import("./benchmark/BenchmarkPanel.vue"));
@@ -336,6 +337,7 @@ const menuItems: { key: MenuKey; label: string; icon: string; hint: string }[] =
   { key: "sat", label: "Components", icon: "lucide:satellite", hint: "Orbits, ground tracks, labels and sensor cones" },
   { key: "map", label: "Map", icon: "lucide:layers", hint: "Basemap, overlays, terrain and stars" },
   { key: "gs", label: "Locations", icon: "lucide:map-pin", hint: "Ground stations, for pass predictions and the sky view" },
+  { key: "ttc", label: "测运控", icon: "lucide:radio-tower", hint: "在独立窗口中打开卫星测运控中心，不遮挡地球；两个窗口实时联动" },
   { key: "globe", label: "Globe", icon: "lucide:globe", hint: "Globe, flat map or Columbus view, and the camera" },
   { key: "sky", label: "Sky", icon: "lucide:telescope", hint: "Look up from a ground station and see what passes over" },
   { key: "render", label: "Graphics", icon: "lucide:gauge", hint: "Hiding the UI, quality, effects and performance" },
@@ -562,10 +564,38 @@ function onPointerCancel(): void {
 
 /** A panel opens over the catalog sheet, which stays open; the Satellites entry takes the sheet back to the panel it grew from. */
 function toggleMenu(name: MenuKey) {
+  if (name === "ttc") {
+    openTtcConsole();
+    return;
+  }
   if (name === "cat") {
     catalogOpen.value = false;
   }
   openMenu.value = openMenu.value === name ? undefined : name;
+}
+
+/**
+ * The console is its own window: it must not cover the globe it steers. The named window
+ * is reused, so a second click focuses the console already open.
+ */
+function openTtcConsole() {
+  let opened: Window | null = null;
+  try {
+    opened = window.open(new URL("ttc.html", document.baseURI).href, "satvis-ttc-console", "popup=yes,width=560,height=960");
+  } catch {
+    opened = null;
+  }
+  if (!opened) {
+    useToastProxy().add({ title: "无法打开测运控窗口", description: "请允许本站弹出窗口后重试", color: "error" });
+    return;
+  }
+  try {
+    // Dev serves Cross-Origin-Opener-Policy: same-origin, which may sever the handle
+    // while leaving the window open; the channel, not the opener, is how they talk.
+    opened.focus();
+  } catch {
+    // The console is open; the operator can bring it forward themselves.
+  }
 }
 
 function closeMenus() {

@@ -1,5 +1,4 @@
-import { FixedFrameTransforms, HeadingPitchRoll, Math as CesiumMath } from "@cesium/core";
-import type { Cartesian3, Quaternion } from "@cesium/core";
+import { Cartesian3, FixedFrameTransforms, HeadingPitchRoll, Math as CesiumMath, Quaternion } from "@cesium/core";
 import { SceneMode } from "@cesium/engine";
 
 import type { OrbitClass } from "@/config/orbitClass";
@@ -72,6 +71,24 @@ export function coneOrientation(position: Cartesian3 | undefined): Quaternion | 
     return undefined;
   }
   return FixedFrameTransforms.headingPitchRollQuaternion(position, CONE_HEADING_PITCH_ROLL);
+}
+
+/** The sensor's local +Z is its boresight; a nadir mount turns it onto the body's -Z. */
+const CONE_NADIR_MOUNT = Quaternion.fromAxisAngle(Cartesian3.UNIT_X, CesiumMath.PI);
+
+const coneScratch = new Quaternion();
+
+/**
+ * The nadir-mounted sensor in the satellite's body frame, carried by the TT&C attitude:
+ * a satellite that rolls or pitches takes its cone with it. The boresight is the body's
+ * -Z, so a spin about it (the panel's yaw) leaves a circular cone's silhouette unchanged.
+ */
+export function coneBodyOrientation(body: Quaternion | undefined, attitude: Quaternion): Quaternion | undefined {
+  if (!body) {
+    return undefined;
+  }
+  const aimed = Quaternion.multiply(body, attitude, coneScratch);
+  return Quaternion.multiply(aimed, CONE_NADIR_MOUNT, aimed);
 }
 
 /** Where a model manifest's file is served, relative to the page. */

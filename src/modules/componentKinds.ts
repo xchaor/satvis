@@ -18,6 +18,7 @@ import {
   SceneMode,
   VelocityOrientationProperty,
 } from "@cesium/engine";
+import type { PropertyBag } from "@cesium/engine";
 import type { Viewer } from "@cesium/widgets";
 import CesiumSensorVolumes from "cesium-sensor-volumes";
 
@@ -26,11 +27,13 @@ import { defaultViewDistance } from "@/config/defaultView";
 import { modelLevel } from "@/config/modelLevels";
 import { ORBIT_CLASS_COLOR, type OrbitClass } from "@/config/orbitClass";
 import type { ModelLod } from "@/config/satelliteMetadata";
+import { OffsetOrientationProperty } from "@/modules/ttc/OffsetOrientationProperty";
+import { attitudeQuaternionOf, modelOverrideOf, panelNodeRotation } from "@/modules/ttc/state";
 import { drawable } from "@/modules/util/drawablePositions";
 import { GroundTrack, type GroundTrackBatch } from "@/modules/util/GroundTrackBatch";
 import { BatchedLine, type PolylineBatch } from "@/modules/util/PolylineBatch";
 
-import { coneDescription, coneOrientation, groundTrackSwath, modelUrl, orbitPathTimes, orbitTrackTimes, orbitUsesPathGraphic } from "./satelliteGraphics";
+import { coneBodyOrientation, coneDescription, coneOrientation, groundTrackSwath, modelUrl, orbitPathTimes, orbitTrackTimes, orbitUsesPathGraphic } from "./satelliteGraphics";
 import type { SatelliteProperties } from "./SatelliteProperties";
 
 /** A BatchedLine when merged into a shared orbit batch, a GroundTrack in the ground-track batch. */
@@ -341,20 +344,35 @@ export class ModelSize {
 }
 
 /** One level of a satellite's model: 0 its file, `i + 1` its copy `i`. */
-function modelGraphics(host: ComponentHost, file: string, level: number): ModelGraphics {
+function modelGraphics(host: ComponentHost, file: string, level: number, overrideUrl?: string, panels = false): ModelGraphics {
+  // An override replaces the LOD set: its one file is the model at every size.
+  const levels = overrideUrl === undefined && Boolean(host.props.model?.lods?.length);
   return new ModelGraphics({
-    uri: modelUrl(file),
+    uri: overrideUrl ?? modelUrl(file),
     minimumPixelSize: new CallbackProperty(() => modelMinimumPixelSize(2 * host.model.radius()), false),
     maximumScale: new CallbackProperty(() => host.model.maximumScale(), false),
-    ...(host.props.model?.lods?.length && { show: new CallbackProperty(() => host.model.shows(level), false) }),
+    ...(levels && { show: new CallbackProperty(() => host.model.shows(level), false) }),
+    // Only the TT&C demo model keeps separate panel nodes; shipping models bake theirs
+    // into one primitive. The bag wraps each plain object in a NodeTransformationProperty
+    // itself, so these are TranslationRotationScale shapes whose rotation is a Property.
+    ...(panels && {
+      nodeTransformations: {
+        solar_panel_port: { rotation: new CallbackProperty(() => panelNodeRotation(host.props.name, 1), false) },
+        solar_panel_starboard: { rotation: new CallbackProperty(() => panelNodeRotation(host.props.name, -1), false) },
+      } as unknown as PropertyBag,
+    }),
   });
 }
 
 /**
  * The entities of the model's lower-detail copies (ADR 0007), most detailed first, which
  * the satellite adds, binds and styles with its "3D model". A pick on one stands for it.
+ * A TT&C model override has no copies, so neither has this.
  */
 export function modelCopies(host: ComponentHost): Entity[] {
+  if (modelOverrideOf(host.props.name)) {
+    return [];
+  }
   return (host.props.model?.lods ?? []).map((lod, i) => atSatellite(host, "model", modelGraphics(host, lod.file, i + 1)));
 }
 
@@ -375,6 +393,20 @@ function bindAtSatellite(component: Component, host: ComponentHost): void {
   if (component instanceof Entity && position) {
     component.position = position as typeof component.position;
     component.orientation = new VelocityOrientationProperty(position) as unknown as typeof component.orientation;
+  }
+}
+
+/**
+ * The model's bind: the velocity orientation with the TT&C panel's body-frame rotation
+ * composed on. Part of the bind because a trajectory refill and a scene refit both
+ * reassign `orientation`, which would drop a one-off offset.
+ */
+function bindModelAtSatellite(component: Component, host: ComponentHost): void {
+  const position = host.props.trajectory.entityPosition;
+  if (component instanceof Entity && position) {
+    component.position = position as typeof component.position;
+    const velocity = new VelocityOrientationProperty(position);
+    component.orientation = new OffsetOrientationProperty(velocity, () => attitudeQuaternionOf(host.props.name)) as unknown as typeof component.orientation;
   }
 }
 
@@ -588,26 +620,35 @@ export const COMPONENT_KINDS: Record<ComponentName, ComponentKind> = {
     },
     bind: (component, host) => {
       const { trajectory } = host.props;
-      if (component instanceof Entity && trajectory.entityPosition) {
-        component.position = trajectory.entityPosition as typeof component.position;
+      const position = trajectory.entityPosition;
+      if (component instanceof Entity && position) {
+        component.position = position as typeof component.position;
+        // The satellite's body frame carries the TT&C attitude, so the nadir-mounted
+        // cone tilts with the model; at a sample window's edge, fall back to the
+        // fixed-frame straight-down orientation that needs no velocity.
+        const body = new VelocityOrientationProperty(position);
         component.orientation = new CallbackProperty(
-          (time?: JulianDate) => coneOrientation(trajectory.position(time as JulianDate)),
+          (time?: JulianDate) => {
+            const quaternion = body.getValue(time as JulianDate);
+            return (quaternion && coneBodyOrientation(quaternion, attitudeQuaternionOf(host.props.name))) || coneOrientation(trajectory.position(time as JulianDate));
+          },
           false,
         ) as unknown as typeof component.orientation;
       }
     },
   },
 
-  /** Only satellites a model manifest lists have one (ADR 0007). */
+  /** Only satellites a model manifest lists have one (ADR 0007), or a TT&C model override. */
   "3D model": {
     create: (host) => {
+      const override = modelOverrideOf(host.props.name);
       const model = host.props.model;
-      if (!model) {
+      if (!override && !model) {
         return undefined;
       }
-      return atSatellite(host, "model", modelGraphics(host, model.file, 0));
+      return atSatellite(host, "model", modelGraphics(host, model?.file ?? "", 0, override?.url, override?.panels === true));
     },
-    bind: bindAtSatellite,
+    bind: bindModelAtSatellite,
     /** Shown or hidden, never dimmed: docs/adr/0010-sky-visibility.md. */
     appear: (component, host) => appearAtSatellite(component, host, () => {}),
   },
