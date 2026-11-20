@@ -64,15 +64,68 @@
       <p v-if="!state.hasModel" class="attitude__warn">该卫星当前没有 3D 模型，选择一个模型后即可在轨道上看到它。</p>
       <p v-else class="attitude__note">当前：{{ state.modelLabel || "卫星清单自带的模型" }}</p>
     </section>
+
+    <section class="attitude__section">
+      <h3 class="attitude__title">模型高亮 <span>半透明包围盒</span></h3>
+      <div class="attitude__swatches" role="group" aria-label="高亮颜色">
+        <button
+          v-for="option in colorOptions"
+          :key="option.key"
+          type="button"
+          class="attitude__swatch"
+          :class="{ 'attitude__swatch--on': highlightColor === option.key }"
+          :style="{ background: option.css }"
+          :aria-label="option.key"
+          :title="option.key"
+          @click="highlightColor = option.key"
+        />
+      </div>
+      <div class="attitude__buttons">
+        <UButton
+          size="xs"
+          :variant="highlightEffect === 'steady' ? 'solid' : 'soft'"
+          :color="highlightEffect === 'steady' ? 'primary' : 'neutral'"
+          @click="highlightEffect = 'steady'"
+          >常亮</UButton
+        >
+        <UButton
+          size="xs"
+          :variant="highlightEffect === 'blink' ? 'solid' : 'soft'"
+          :color="highlightEffect === 'blink' ? 'primary' : 'neutral'"
+          @click="highlightEffect = 'blink'"
+          >闪烁</UButton
+        >
+        <label class="attitude__seconds">
+          时长
+          <input v-model.number="highlightSeconds" type="number" min="1" max="3600" step="1" aria-label="高亮有效时长（秒）" />
+          秒
+        </label>
+      </div>
+      <div class="attitude__buttons">
+        <UButton size="xs" variant="soft" color="neutral" icon="i-lucide-highlighter" @click="applyHighlight">应用高亮</UButton>
+        <UButton size="xs" variant="ghost" color="neutral" icon="i-lucide-eraser" @click="api.clearHighlight()">清除</UButton>
+        <span v-if="remaining > 0" class="attitude__note">剩余 {{ remaining }} 秒</span>
+      </div>
+      <p class="attitude__note">在锁定卫星的模型外罩一个半透明包围盒；颜色、常亮/闪烁和有效时长可调，到时自动消失。</p>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { ttcModelUrl, useTtcModels } from "@/composables/useTtcModels";
 import { useTtcConsole } from "@/modules/ttc/console";
 import { TTC_DEMO_LABEL } from "@/modules/ttc/demoModel";
+import {
+  HIGHLIGHT_DEFAULT_SECONDS,
+  HIGHLIGHT_MAX_SECONDS,
+  HIGHLIGHT_MIN_SECONDS,
+  TTC_HIGHLIGHT_COLORS,
+  TTC_HIGHLIGHT_COLOR_KEYS,
+  type TtcHighlightColor,
+  type TtcHighlightEffect,
+} from "@/modules/ttc/highlight";
 
 const emit = defineEmits<{ "open-fleet": [] }>();
 
@@ -99,6 +152,50 @@ const selectedModel = computed(() => {
   }
   return state.modelDemo ? DEMO_VALUE : state.modelUrl;
 });
+
+const colorOptions = TTC_HIGHLIGHT_COLOR_KEYS.map((key) => ({ key, css: TTC_HIGHLIGHT_COLORS[key] }));
+const highlightColor = ref<TtcHighlightColor>("red");
+const highlightEffect = ref<TtcHighlightEffect>("steady");
+const highlightSeconds = ref(HIGHLIGHT_DEFAULT_SECONDS);
+const now = ref(Date.now());
+let countdown: ReturnType<typeof setInterval> | undefined;
+
+onMounted(() => {
+  countdown = setInterval(() => {
+    now.value = Date.now();
+  }, 500);
+});
+
+onBeforeUnmount(() => {
+  if (countdown !== undefined) {
+    clearInterval(countdown);
+  }
+});
+
+// An HTTP highlight (or one set from another console) wins over a local, unapplied choice.
+watch(
+  () => state.highlightColor,
+  (value) => {
+    if ((TTC_HIGHLIGHT_COLOR_KEYS as readonly string[]).includes(value)) {
+      highlightColor.value = value as TtcHighlightColor;
+    }
+  },
+);
+
+watch(
+  () => state.highlightEffect,
+  (value) => {
+    highlightEffect.value = value;
+  },
+);
+
+const remaining = computed(() => (state.highlightColor !== "" && state.highlightUntil > now.value ? Math.ceil((state.highlightUntil - now.value) / 1000) : 0));
+
+function applyHighlight(): void {
+  const seconds = Math.min(HIGHLIGHT_MAX_SECONDS, Math.max(HIGHLIGHT_MIN_SECONDS, Math.round(highlightSeconds.value || HIGHLIGHT_DEFAULT_SECONDS)));
+  highlightSeconds.value = seconds;
+  api.setHighlight(highlightColor.value, highlightEffect.value, seconds);
+}
 
 /** The slider follows the drag locally; the satellite view's echo confirms it a tick later. */
 function setAxis(axis: "roll" | "pitch" | "yaw", event: Event): void {
@@ -259,6 +356,50 @@ function onModelChange(event: Event): void {
   background: var(--panel-surface-dense);
   border: 1px solid var(--panel-hairline);
   border-radius: 6px;
+  color: var(--panel-ink);
+  font-size: 11px;
+}
+
+.attitude__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attitude__swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.attitude__swatch:hover {
+  opacity: 1;
+}
+
+.attitude__swatch--on {
+  border-color: var(--panel-ink);
+  box-shadow: 0 0 0 1px #000000cc;
+  opacity: 1;
+}
+
+.attitude__seconds {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+
+.attitude__seconds input {
+  width: 58px;
+  padding: 3px 4px;
+  background: var(--panel-surface-dense);
+  border: 1px solid var(--panel-hairline);
+  border-radius: 5px;
   color: var(--panel-ink);
   font-size: 11px;
 }

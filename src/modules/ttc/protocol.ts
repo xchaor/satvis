@@ -4,6 +4,7 @@
 import type { TtcMessage } from "@/stores/controlCenter";
 
 import type { TtcCommandKind, TtcFleetState, TtcModelSelection, TtcStation, TtcStateSnapshot } from "./console";
+import type { TtcHighlightEffect } from "./highlight";
 
 export const TTC_CHANNEL_NAME = "satvis-ttc-console";
 
@@ -26,7 +27,9 @@ export type TtcConsoleMessage =
   | { type: "setAutoTelemetry"; on: boolean }
   | { type: "clearMessages" }
   | { type: "setFollow"; on: boolean }
-  | { type: "setGlobal3D"; on: boolean };
+  | { type: "setGlobal3D"; on: boolean }
+  | { type: "setHighlight"; color: string; effect: TtcHighlightEffect; duration: number }
+  | { type: "clearHighlight" };
 
 export type TtcHostMessage =
   | { type: "state"; state: TtcStateSnapshot; messages?: TtcMessage[] }

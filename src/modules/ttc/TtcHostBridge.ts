@@ -19,6 +19,10 @@ const FLEET_ROWS = 60;
 const HTTP_POLL_MS = 400;
 const HTTP_RETRY_MS = 5000;
 const HTTP_MESSAGES = 20;
+/** Actions whose HTTP form takes an optional `name` and locks it before acting. */
+const HTTP_TARGETABLE_ACTIONS = new Set(["attitude", "reset-attitude", "spin", "panels", "command", "uplink", "downlink", "model", "highlight"]);
+const HTTP_READY_INTERVAL_MS = 300;
+const HTTP_READY_ATTEMPTS = 20;
 
 /**
  * The satellite view's side of the TT&C console: it owns the scene, publishes its state
@@ -83,6 +87,12 @@ export class TtcHostBridge {
         void store.islStats;
         void store.messages.length;
         void store.modelOverrides;
+        void store.highlightColor;
+        void store.highlightEffect;
+        void store.highlightUntil;
+        void store.interlinkFrom;
+        void store.interlinkTo;
+        void store.interlinkUntil;
         void this.#satStore.enabledComponents.length;
         void this.#satStore.groundStations.length;
         this.#schedulePublish();
@@ -183,6 +193,12 @@ export class TtcHostBridge {
       case "setGlobal3D":
         this.#setGlobal3D(message.on);
         break;
+      case "setHighlight":
+        store.setHighlight(message.color, message.effect, message.duration);
+        break;
+      case "clearHighlight":
+        store.clearHighlight();
+        break;
     }
   }
 
@@ -264,6 +280,10 @@ export class TtcHostBridge {
     const store = this.#store;
     const number = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
     const action = typeof command.action === "string" ? command.action : "";
+    // A named action locks its satellite first, so it also works before any lock.
+    if (HTTP_TARGETABLE_ACTIONS.has(action)) {
+      this.#ensureTarget(command);
+    }
     const needsLock = (): boolean => {
       if (store.lockedName !== "") {
         return true;
@@ -323,21 +343,23 @@ export class TtcHostBridge {
         break;
       case "command": {
         const kind = command.kind;
-        if (kind === "telemetry" || kind === "attitude" || kind === "panels-deploy" || kind === "panels-stow") {
-          getTtcManager().sendCommand(kind);
+        if ((kind === "telemetry" || kind === "attitude" || kind === "panels-deploy" || kind === "panels-stow") && needsLock()) {
+          const target = store.lockedName;
+          this.#runWhenReady(target, () => getTtcManager().sendCommand(kind));
         }
         break;
       }
       case "uplink": {
         const payload = text(command.text);
-        if (payload) {
-          getTtcManager().sendUplink(payload);
+        if (payload && needsLock()) {
+          const target = store.lockedName;
+          this.#runWhenReady(target, () => getTtcManager().sendUplink(payload));
         }
         break;
       }
       case "downlink": {
         const payload = text(command.text);
-        if (payload) {
+        if (payload && needsLock()) {
           getTtcManager().sendDownlink(payload);
         }
         break;
@@ -354,7 +376,67 @@ export class TtcHostBridge {
         }
         break;
       }
+      case "highlight": {
+        const color = text(command.color);
+        if (color && needsLock()) {
+          const effect = command.effect === "blink" ? "blink" : "steady";
+          const duration = number(command.duration) ?? 30;
+          store.setHighlight(color, effect, duration);
+        }
+        break;
+      }
+      case "highlight-clear":
+        store.clearHighlight();
+        break;
+      case "interlink": {
+        const from = text(command.fromName);
+        const to = text(command.toName);
+        if (from && to) {
+          const duration = number(command.duration) ?? 30;
+          getTtcManager().setInterlink(from, to, duration);
+        }
+        break;
+      }
+      case "interlink-clear":
+        getTtcManager().clearInterlink();
+        break;
     }
+  }
+
+  /** Locks the HTTP action's named satellite without touching the camera or tracking. */
+  #ensureTarget(command: Record<string, unknown>): void {
+    const requested = typeof command.name === "string" ? command.name.trim() : "";
+    if (requested !== "" && requested !== this.#store.lockedName) {
+      getTtcManager().lock(requested, false);
+    }
+  }
+
+  /**
+   * Ground commands need the trajectory; a satellite named just now is still being
+   * activated and built, so run the command once it appears instead of losing it.
+   */
+  #runWhenReady(name: string, run: () => void): void {
+    if (this.#cc.sats.getSatellite(name)) {
+      run();
+      return;
+    }
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (this.#disposed || this.#store.lockedName !== name) {
+        clearInterval(timer);
+        return;
+      }
+      if (this.#cc.sats.getSatellite(name)) {
+        clearInterval(timer);
+        run();
+        return;
+      }
+      if (attempts >= HTTP_READY_ATTEMPTS) {
+        clearInterval(timer);
+        this.#httpWarn(`HTTP 指令超时：${name} 的卫星数据尚未就绪`);
+      }
+    }, HTTP_READY_INTERVAL_MS);
   }
 
   #httpWarn(text: string): void {
@@ -456,6 +538,12 @@ export class TtcHostBridge {
       groundStats: { ...store.groundStats },
       interSatelliteLinks: store.interSatelliteLinks.map((link) => ({ id: link.id, a: link.a, b: link.b })),
       islStats: Object.fromEntries(Object.entries(store.islStats).map(([id, stats]) => [id, { ...stats }])) as TtcStateSnapshot["islStats"],
+      highlightColor: store.highlightColor,
+      highlightEffect: store.highlightEffect,
+      highlightUntil: store.highlightUntil,
+      interlinkFrom: store.interlinkFrom,
+      interlinkTo: store.interlinkTo,
+      interlinkUntil: store.interlinkUntil,
       stations: this.#satStore.groundStations.map((station) => ({ lat: station.lat, lon: station.lon, ...(station.name !== undefined && { name: station.name }) })),
       // A picker list, not a census: 200 is more than an operator picks from, and keeps
       // the once-a-second snapshot small when a whole constellation is active.

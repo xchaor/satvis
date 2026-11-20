@@ -6,6 +6,8 @@ import { inject, type InjectionKey } from "vue";
 
 import type { InterSatelliteLink, TtcLinkStats, TtcMessage } from "@/stores/controlCenter";
 
+import type { TtcHighlightEffect } from "./highlight";
+
 export type TtcConsoleTab = "fleet" | "attitude" | "links" | "log";
 
 export type TtcCommandKind = "telemetry" | "attitude" | "panels-deploy" | "panels-stow";
@@ -60,6 +62,14 @@ export interface TtcConsoleState {
   stations: TtcStation[];
   /** Active satellites other than the locked one, for the inter-satellite link picker. */
   activeNames: string[];
+  /** The model highlight box; empty means none. `highlightUntil` is a wall-clock epoch. */
+  highlightColor: string;
+  highlightEffect: TtcHighlightEffect;
+  highlightUntil: number;
+  /** The two-satellite demo in force, also wall-clock; empty names mean none. */
+  interlinkFrom: string;
+  interlinkTo: string;
+  interlinkUntil: number;
 }
 
 /** The satellite view's state, without what the console keeps itself (`connected`, messages). */
@@ -89,6 +99,8 @@ export interface TtcConsoleApi {
   clearMessages(): void;
   setFollow(on: boolean): void;
   setGlobal3D(on: boolean): void;
+  setHighlight(color: string, effect: TtcHighlightEffect, durationSeconds: number): void;
+  clearHighlight(): void;
   /** Asks the satellite view for a snapshot again; the button for a closed/reopened view. */
   reconnect(): void;
 }

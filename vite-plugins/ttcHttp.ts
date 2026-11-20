@@ -6,9 +6,36 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Plugin } from "vite";
 
+import {
+  HIGHLIGHT_DEFAULT_SECONDS,
+  HIGHLIGHT_MAX_SECONDS,
+  HIGHLIGHT_MIN_SECONDS,
+  TTC_HIGHLIGHT_COLOR_KEYS,
+  TTC_HIGHLIGHT_EFFECTS,
+  TTC_INTERLINK_DEFAULT_SECONDS,
+} from "../src/modules/ttc/highlight.ts";
+
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_QUEUE = 200;
-const COMMAND_ACTIONS = new Set(["attitude", "reset-attitude", "spin", "panels", "lock", "unlock", "command", "uplink", "downlink", "model"]);
+const COMMAND_ACTIONS = new Set([
+  "attitude",
+  "reset-attitude",
+  "spin",
+  "panels",
+  "lock",
+  "unlock",
+  "command",
+  "uplink",
+  "downlink",
+  "model",
+  "highlight",
+  "highlight-clear",
+  "interlink",
+  "interlink-clear",
+]);
+
+/** Actions that take an optional `name`: it implicitly locks that satellite first. */
+const TARGETABLE_ACTIONS = new Set(["attitude", "reset-attitude", "spin", "panels", "command", "uplink", "downlink", "model", "highlight"]);
 const SATELLITE_COMMANDS = new Set(["telemetry", "attitude", "panels-deploy", "panels-stow"]);
 const MODEL_FILE = /^[A-Za-z0-9 ._()+-]+(\/[A-Za-z0-9 ._()+-]+)?\.glb$/;
 
@@ -89,10 +116,52 @@ function normalize(raw: Record<string, unknown>): Normalized {
       }
       return { ok: true, command: { ...command, file } };
     }
+    case "highlight": {
+      const color = typeof raw.color === "string" ? raw.color : "";
+      if (!(TTC_HIGHLIGHT_COLOR_KEYS as readonly string[]).includes(color)) {
+        return { ok: false, error: `highlight needs color: ${TTC_HIGHLIGHT_COLOR_KEYS.join(", ")}` };
+      }
+      const effect = typeof raw.effect === "string" ? raw.effect : "steady";
+      if (!(TTC_HIGHLIGHT_EFFECTS as readonly string[]).includes(effect)) {
+        return { ok: false, error: "effect must be steady or blink" };
+      }
+      const duration = numberFrom(raw.duration) ?? HIGHLIGHT_DEFAULT_SECONDS;
+      if (duration < HIGHLIGHT_MIN_SECONDS || duration > HIGHLIGHT_MAX_SECONDS) {
+        return { ok: false, error: `duration must be ${HIGHLIGHT_MIN_SECONDS}–${HIGHLIGHT_MAX_SECONDS} seconds` };
+      }
+      return { ok: true, command: { ...command, color, effect, duration } };
+    }
+    case "interlink": {
+      const fromName = typeof raw.fromName === "string" ? raw.fromName.trim().slice(0, 200) : "";
+      const toName = typeof raw.toName === "string" ? raw.toName.trim().slice(0, 200) : "";
+      if (fromName === "" || toName === "") {
+        return { ok: false, error: "interlink needs fromName and toName" };
+      }
+      if (fromName === toName) {
+        return { ok: false, error: "fromName and toName must be different satellites" };
+      }
+      const duration = numberFrom(raw.duration) ?? TTC_INTERLINK_DEFAULT_SECONDS;
+      if (duration < HIGHLIGHT_MIN_SECONDS || duration > HIGHLIGHT_MAX_SECONDS) {
+        return { ok: false, error: `duration must be ${HIGHLIGHT_MIN_SECONDS}–${HIGHLIGHT_MAX_SECONDS} seconds` };
+      }
+      return { ok: true, command: { ...command, fromName, toName, duration } };
+    }
     default:
-      // reset-attitude and unlock carry nothing.
+      // reset-attitude, unlock and highlight-clear carry nothing.
       return { ok: true, command };
   }
+}
+
+/** Adds the optional target satellite to an action that can name one. */
+function attachTarget(command: Record<string, unknown>, raw: Record<string, unknown>): Normalized {
+  const action = typeof command.action === "string" ? command.action : "";
+  if (!TARGETABLE_ACTIONS.has(action) || raw.name === undefined) {
+    return { ok: true, command };
+  }
+  if (typeof raw.name !== "string" || raw.name.trim() === "") {
+    return { ok: false, error: "name must be a non-empty string" };
+  }
+  return { ok: true, command: { ...command, name: raw.name.trim().slice(0, 200) } };
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -178,11 +247,20 @@ export function ttcHttpApi(): Plugin {
                 "POST /ttc-api/command": "enqueue a command from a JSON body",
               },
               actions: [...COMMAND_ACTIONS],
+              targetable: [...TARGETABLE_ACTIONS],
+              note: "A targetable action accepts an optional name; it locks that satellite first, without moving the camera, so it also works before any lock.",
               examples: [
                 "GET /ttc-api/command?action=attitude&roll=20&pitch=-10&yaw=45",
-                'POST /ttc-api/command {"action":"panels","angle":0}',
-                'POST /ttc-api/command {"action":"uplink","text":"HELLO SAT"}',
+                "GET /ttc-api/command?action=attitude&name=ISS+(ZARYA)&roll=20&pitch=-10&yaw=45",
+                'POST /ttc-api/command {"action":"panels","name":"ISS (ZARYA)","angle":0}',
+                'POST /ttc-api/command {"action":"uplink","name":"ISS (ZARYA)","text":"HELLO SAT"}',
                 'POST /ttc-api/command {"action":"lock","name":"ISS (ZARYA)"}',
+                "GET /ttc-api/command?action=highlight&color=red&effect=blink&duration=30",
+                'POST /ttc-api/command {"action":"highlight","color":"green","effect":"steady","duration":60}',
+                'POST /ttc-api/command {"action":"highlight-clear"}',
+                "GET /ttc-api/command?action=interlink&fromName=ISS+(ZARYA)&toName=CSS+(TIANHE)&duration=60",
+                'POST /ttc-api/command {"action":"interlink","fromName":"ISS (ZARYA)","toName":"CSS (TIANHE)","duration":60}',
+                'POST /ttc-api/command {"action":"interlink-clear"}',
               ],
             });
             return;
@@ -200,9 +278,14 @@ export function ttcHttpApi(): Plugin {
               sendJson(res, 400, { ok: false, error: normalized.error });
               return;
             }
-            const id = enqueue(normalized.command);
-            logger.info(`[ttc-api] #${id} ${JSON.stringify(normalized.command)}`);
-            sendJson(res, 202, { ok: true, id, command: normalized.command });
+            const targeted = attachTarget(normalized.command, raw);
+            if (!targeted.ok) {
+              sendJson(res, 400, { ok: false, error: targeted.error });
+              return;
+            }
+            const id = enqueue(targeted.command);
+            logger.info(`[ttc-api] #${id} ${JSON.stringify(targeted.command)}`);
+            sendJson(res, 202, { ok: true, id, command: targeted.command });
             return;
           }
 

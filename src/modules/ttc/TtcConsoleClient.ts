@@ -36,6 +36,12 @@ export function createTtcConsoleApi(): TtcConsoleApi {
     messages: [],
     stations: [],
     activeNames: [],
+    highlightColor: "",
+    highlightEffect: "steady",
+    highlightUntil: 0,
+    interlinkFrom: "",
+    interlinkTo: "",
+    interlinkUntil: 0,
   });
   const fleet = reactive<TtcFleetState>({ rows: [], total: 0, activeCount: 0, query: "", searching: false });
 
@@ -93,6 +99,8 @@ export function createTtcConsoleApi(): TtcConsoleApi {
     clearMessages: () => send({ type: "clearMessages" }),
     setFollow: (on) => send({ type: "setFollow", on }),
     setGlobal3D: (on) => send({ type: "setGlobal3D", on }),
+    setHighlight: (color, effect, duration) => send({ type: "setHighlight", color, effect, duration }),
+    clearHighlight: () => send({ type: "clearHighlight" }),
     reconnect: hello,
   };
 }

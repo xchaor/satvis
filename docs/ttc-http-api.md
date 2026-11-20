@@ -1,8 +1,9 @@
 # TT&C HTTP interface
 
 An HTTP interface for driving the satellite view from an external system: attitude,
-solar-panel actions, satellite commands, and uplink/downlink data. It is served by the
-Vite dev server (`pnpm dev`), so the page and the API share one origin and port.
+solar-panel actions, model highlighting, satellite commands, and uplink/downlink data.
+It is served by the Vite dev server (`pnpm dev`), so the page and the API share one
+origin and port.
 
 ```
 http://localhost:5174/ttc-api
@@ -40,10 +41,38 @@ a trusted network.
 | `uplink` | `text` (≤ 1000 chars) | Logs an external uplink once the satellite is above the horizon, then a `DATA-ACK` downlink after the light time |
 | `downlink` | `text` (≤ 1000 chars) | Logs an external downlink frame from the satellite to the ground station |
 | `model` | `file`: a `.glb` under `data/models`, or `"demo"` | Switches the locked satellite's model |
+| `highlight` | `color`: `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `white`; `effect`: `steady` or `blink`; `duration`: 1–3600 s (default 30) | Puts a semi-transparent colored bounding box around the locked model; it keeps a small minimum screen size, so it is visible in the global view; wall-clock duration, then it disappears |
+| `highlight-clear` | — | Removes the box immediately |
+| `interlink` | `fromName`, `toName` (two different catalog names), `duration`: 1–3600 s (default 30) | The from satellite blinks green, the to satellite blinks red, and a yellow pulse runs along the line between them. Activates both satellites; it does not lock anything or move the camera |
+| `interlink-clear` | — | Removes the inter-satellite demo immediately |
 
-Attitude, spin, panels and model need a locked satellite; without one the request is
-acknowledged but the satellite view logs a warning and does nothing. `uplink` also needs
-a ground station in the Locations panel and the satellite above the horizon.
+## Target satellite: the optional `name`
+
+Every action except `lock`, `unlock` and `highlight-clear` accepts an optional `name`.
+When it is given, that satellite is **locked first** (implicitly: it is activated and its
+3D model is enabled), then the action runs. The implicit lock **does not move the camera
+or change tracking**: the operator keeps the current view, and only the requested effect
+is applied. Use the explicit `lock` action (or the console's fleet list) when you want the
+camera to follow. This means the actions work before any `lock` call:
+
+```bash
+# No prior lock: this locks ISS and then applies the attitude
+curl -X POST http://localhost:5173/ttc-api/command \
+  -H "Content-Type: application/json" \
+  -d '{"action":"attitude","name":"ISS (ZARYA)","roll":20,"pitch":-10,"yaw":45}'
+
+# Same over GET (URL-encode the name)
+curl "http://localhost:5173/ttc-api/command?action=highlight&name=ISS+(ZARYA)&color=red&effect=blink&duration=30"
+```
+
+Without `name`, the target is the currently locked satellite. With neither, the action is
+acknowledged but the satellite view logs a warning and does nothing. Attitude, spin,
+panels, model and highlight need a target; `uplink` additionally needs a ground station in
+the Locations panel and the satellite above the horizon. Ground commands and uplinks sent
+with a just-named satellite wait up to ~6 s for its data to load, then run.
+
+`name` must match the catalog's full name (case-sensitive), as shown in the console's
+fleet list or `GET /ttc-api/state`.
 
 ## State
 
@@ -56,6 +85,8 @@ a ground station in the Locations panel and the satellite above the horizon.
   "hasModel": true,
   "roll": 20, "pitch": -10, "yaw": 45, "spinRate": 0,
   "panelAngle": 0, "panelTarget": 0,
+  "highlightColor": "red", "highlightEffect": "blink", "highlightUntil": 1795250000000,
+  "interlinkFrom": "ISS (ZARYA)", "interlinkTo": "CSS (TIANHE)", "interlinkUntil": 1795250000000,
   "groundStats": { "elevationDeg": 34.2, "distanceKm": 812, "latencyMs": 3.1, "visible": true },
   "interSatelliteLinks": [{ "id": 0, "a": "ISS (ZARYA)", "b": "CSS (TIANHE)" }],
   "islStats": { "0": { "distanceKm": 1200, "latencyMs": 4.0, "visible": true } },
@@ -97,6 +128,30 @@ curl -X POST http://localhost:5174/ttc-api/command \
 curl -X POST http://localhost:5174/ttc-api/command \
   -H "Content-Type: application/json" -d '{"action":"downlink","text":"TLM 电池 87.2%"}'
 
-# Then read the satellite's last state, messages included
+# Highlight the model: red translucent box, blinking, for 30 s
+curl "http://localhost:5174/ttc-api/command?action=highlight&color=red&effect=blink&duration=30"
+
+# The same as JSON: green, steady, for 2 minutes
+curl -X POST http://localhost:5174/ttc-api/command \
+  -H "Content-Type: application/json" \
+  -d '{"action":"highlight","color":"green","effect":"steady","duration":120}'
+
+# Remove the highlight
+curl -X POST http://localhost:5174/ttc-api/command \
+  -H "Content-Type: application/json" -d '{"action":"highlight-clear"}'
+
+# Inter-satellite demo: ISS blinks green, CSS blinks red, a yellow pulse runs between
+curl -X POST http://localhost:5174/ttc-api/command \
+  -H "Content-Type: application/json" \
+  -d '{"action":"interlink","fromName":"ISS (ZARYA)","toName":"CSS (TIANHE)","duration":60}'
+
+# The same over GET (URL-encode the names)
+curl "http://localhost:5174/ttc-api/command?action=interlink&fromName=ISS+(ZARYA)&toName=CSS+(TIANHE)&duration=60"
+
+# Remove the inter-satellite demo
+curl -X POST http://localhost:5174/ttc-api/command \
+  -H "Content-Type: application/json" -d '{"action":"interlink-clear"}'
+
+# Then read the satellite's last state, messages, highlight and interlink included
 curl http://localhost:5174/ttc-api/state
 ```

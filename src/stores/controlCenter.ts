@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
+import { HIGHLIGHT_MAX_SECONDS, HIGHLIGHT_MIN_SECONDS, type TtcHighlightEffect } from "@/modules/ttc/highlight";
 import { panelAngleOf } from "@/modules/ttc/state";
 
 export type TtcTab = "fleet" | "attitude" | "links" | "log";
@@ -67,6 +68,14 @@ export const useControlCenterStore = defineStore("controlCenter", () => {
   const groundStats = ref<TtcLinkStats>({ visible: false });
   const islStats = ref<Record<number, TtcLinkStats>>({});
   const modelOverrides = ref<Record<string, ModelChoice>>({});
+  /** The highlight box in force; empty means none. Wall-clock expiry, not simulation time. */
+  const highlightColor = ref("");
+  const highlightEffect = ref<TtcHighlightEffect>("steady");
+  const highlightUntil = ref(0);
+  /** The two-satellite demo: from blinks green, to blinks red, a yellow pulse runs between. */
+  const interlinkFrom = ref("");
+  const interlinkTo = ref("");
+  const interlinkUntil = ref(0);
 
   let nextMessageId = 0;
   let nextLinkId = 0;
@@ -151,6 +160,33 @@ export const useControlCenterStore = defineStore("controlCenter", () => {
     hasModel.value = has;
   }
 
+  /** Wall-clock seconds, so a paused simulation does not freeze the operator's marker. */
+  function setHighlight(color: string, effect: TtcHighlightEffect, durationSeconds: number): void {
+    const seconds = Math.min(HIGHLIGHT_MAX_SECONDS, Math.max(HIGHLIGHT_MIN_SECONDS, Math.round(durationSeconds)));
+    highlightColor.value = color;
+    highlightEffect.value = effect;
+    highlightUntil.value = Date.now() + seconds * 1000;
+  }
+
+  function clearHighlight(): void {
+    highlightColor.value = "";
+    highlightUntil.value = 0;
+  }
+
+  /** Wall-clock seconds and two distinct satellites; it does not lock or move the camera. */
+  function setInterlink(from: string, to: string, durationSeconds: number): void {
+    const seconds = Math.min(HIGHLIGHT_MAX_SECONDS, Math.max(HIGHLIGHT_MIN_SECONDS, Math.round(durationSeconds)));
+    interlinkFrom.value = from;
+    interlinkTo.value = to;
+    interlinkUntil.value = Date.now() + seconds * 1000;
+  }
+
+  function clearInterlink(): void {
+    interlinkFrom.value = "";
+    interlinkTo.value = "";
+    interlinkUntil.value = 0;
+  }
+
   function log(entry: Omit<TtcMessage, "id">): void {
     const next = [...messages.value, { ...entry, id: nextMessageId++ }];
     messages.value = next.length > MESSAGE_LIMIT ? next.slice(next.length - MESSAGE_LIMIT) : next;
@@ -218,6 +254,12 @@ export const useControlCenterStore = defineStore("controlCenter", () => {
     groundStats,
     islStats,
     modelOverrides,
+    highlightColor,
+    highlightEffect,
+    highlightUntil,
+    interlinkFrom,
+    interlinkTo,
+    interlinkUntil,
     isLocked,
     lockedModel,
     lock,
@@ -232,6 +274,10 @@ export const useControlCenterStore = defineStore("controlCenter", () => {
     setStationIndex,
     setAutoTelemetry,
     setHasModel,
+    setHighlight,
+    clearHighlight,
+    setInterlink,
+    clearInterlink,
     log,
     clearMessages,
     addInterSatelliteLink,
